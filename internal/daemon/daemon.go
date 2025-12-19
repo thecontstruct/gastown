@@ -8,19 +8,22 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/steveyegge/gastown/internal/keepalive"
 	"github.com/steveyegge/gastown/internal/tmux"
 )
 
 // Daemon is the town-level background service.
 type Daemon struct {
-	config *Config
-	tmux   *tmux.Tmux
-	logger *log.Logger
-	ctx    context.Context
-	cancel context.CancelFunc
+	config  *Config
+	tmux    *tmux.Tmux
+	logger  *log.Logger
+	ctx     context.Context
+	cancel  context.CancelFunc
+	backoff *BackoffManager
 }
 
 // New creates a new daemon instance.
@@ -41,11 +44,12 @@ func New(config *Config) (*Daemon, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &Daemon{
-		config: config,
-		tmux:   tmux.NewTmux(),
-		logger: logger,
-		ctx:    ctx,
-		cancel: cancel,
+		config:  config,
+		tmux:    tmux.NewTmux(),
+		logger:  logger,
+		ctx:     ctx,
+		cancel:  cancel,
+		backoff: NewBackoffManager(DefaultBackoffConfig()),
 	}, nil
 }
 
@@ -124,6 +128,7 @@ func (d *Daemon) heartbeat(state *State) {
 // pokeMayor sends a heartbeat to the Mayor session.
 func (d *Daemon) pokeMayor() {
 	const mayorSession = "gt-mayor"
+	const agentID = "mayor"
 
 	running, err := d.tmux.HasSession(mayorSession)
 	if err != nil {
@@ -136,6 +141,22 @@ func (d *Daemon) pokeMayor() {
 		return
 	}
 
+	// Check keepalive to see if agent is active
+	state := keepalive.Read(d.config.TownRoot)
+	if state != nil && state.IsFresh() {
+		// Agent is actively working, reset backoff
+		d.backoff.RecordActivity(agentID)
+		d.logger.Printf("Mayor is fresh (cmd: %s), skipping poke", state.LastCommand)
+		return
+	}
+
+	// Check if we should poke based on backoff interval
+	if !d.backoff.ShouldPoke(agentID) {
+		interval := d.backoff.GetInterval(agentID)
+		d.logger.Printf("Mayor backoff in effect (interval: %v), skipping poke", interval)
+		return
+	}
+
 	// Send heartbeat message via tmux
 	msg := "HEARTBEAT: check your rigs"
 	if err := d.tmux.SendKeys(mayorSession, msg); err != nil {
@@ -143,7 +164,19 @@ func (d *Daemon) pokeMayor() {
 		return
 	}
 
-	d.logger.Println("Poked Mayor")
+	d.backoff.RecordPoke(agentID)
+
+	// If agent is stale or very stale, record a miss (increase backoff)
+	if state == nil || state.IsVeryStale() {
+		d.backoff.RecordMiss(agentID)
+		interval := d.backoff.GetInterval(agentID)
+		d.logger.Printf("Poked Mayor (very stale, backoff now: %v)", interval)
+	} else if state.IsStale() {
+		// Stale but not very stale - don't increase backoff, but don't reset either
+		d.logger.Println("Poked Mayor (stale)")
+	} else {
+		d.logger.Println("Poked Mayor")
+	}
 }
 
 // pokeWitnesses sends heartbeats to all Witness sessions.
@@ -162,14 +195,63 @@ func (d *Daemon) pokeWitnesses() {
 			continue
 		}
 
-		msg := "HEARTBEAT: check your workers"
-		if err := d.tmux.SendKeys(session, msg); err != nil {
-			d.logger.Printf("Error poking Witness %s: %v", session, err)
-			continue
-		}
-
-		d.logger.Printf("Poked Witness: %s", session)
+		d.pokeWitness(session)
 	}
+}
+
+// pokeWitness sends a heartbeat to a single witness session with backoff.
+func (d *Daemon) pokeWitness(session string) {
+	// Extract rig name from session (gt-<rig>-witness -> <rig>)
+	rigName := extractRigName(session)
+	agentID := session // Use session name as agent ID
+
+	// Find the rig's workspace for keepalive check
+	rigWorkspace := filepath.Join(d.config.TownRoot, "gastown", rigName)
+
+	// Check keepalive to see if the witness is active
+	state := keepalive.Read(rigWorkspace)
+	if state != nil && state.IsFresh() {
+		// Witness is actively working, reset backoff
+		d.backoff.RecordActivity(agentID)
+		d.logger.Printf("Witness %s is fresh (cmd: %s), skipping poke", session, state.LastCommand)
+		return
+	}
+
+	// Check if we should poke based on backoff interval
+	if !d.backoff.ShouldPoke(agentID) {
+		interval := d.backoff.GetInterval(agentID)
+		d.logger.Printf("Witness %s backoff in effect (interval: %v), skipping poke", session, interval)
+		return
+	}
+
+	// Send heartbeat message
+	msg := "HEARTBEAT: check your workers"
+	if err := d.tmux.SendKeys(session, msg); err != nil {
+		d.logger.Printf("Error poking Witness %s: %v", session, err)
+		return
+	}
+
+	d.backoff.RecordPoke(agentID)
+
+	// If agent is stale or very stale, record a miss (increase backoff)
+	if state == nil || state.IsVeryStale() {
+		d.backoff.RecordMiss(agentID)
+		interval := d.backoff.GetInterval(agentID)
+		d.logger.Printf("Poked Witness %s (very stale, backoff now: %v)", session, interval)
+	} else if state.IsStale() {
+		d.logger.Printf("Poked Witness %s (stale)", session)
+	} else {
+		d.logger.Printf("Poked Witness %s", session)
+	}
+}
+
+// extractRigName extracts the rig name from a witness session name.
+// "gt-gastown-witness" -> "gastown"
+func extractRigName(session string) string {
+	// Remove "gt-" prefix and "-witness" suffix
+	name := strings.TrimPrefix(session, "gt-")
+	name = strings.TrimSuffix(name, "-witness")
+	return name
 }
 
 // isWitnessSession checks if a session name is a witness session.
