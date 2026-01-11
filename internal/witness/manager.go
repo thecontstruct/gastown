@@ -233,6 +233,14 @@ func (m *Manager) Start(foreground bool, agentOverride string, envOverrides []st
 
 	time.Sleep(constants.ShutdownNotifyDelay)
 
+	// Wait for Claude to be fully ready before sending any input.
+	// Claude shows "Incubating..." while loading MCP servers, etc.
+	// See: gt-saj - Deacon attach should wait for Claude to fully initialize
+	runtimeConfig := config.LoadRuntimeConfig(m.rig.Path)
+	if err := t.WaitForRuntimeReady(sessionID, runtimeConfig, constants.ClaudeStartTimeout); err != nil {
+		// Non-fatal - continue with nudges even if we timeout
+	}
+
 	// Inject startup nudge for predecessor discovery via /resume
 	address := fmt.Sprintf("%s/witness", m.rig.Name)
 	_ = session.StartupNudge(t, sessionID, session.StartupNudgeConfig{

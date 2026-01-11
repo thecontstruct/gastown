@@ -399,6 +399,14 @@ func startDeaconSession(t *tmux.Tmux, sessionName, agentOverride string) error {
 	runtimeConfig := config.LoadRuntimeConfig("")
 	_ = runtime.RunStartupFallback(t, sessionName, "deacon", runtimeConfig)
 
+	// Wait for Claude to be fully ready before sending any input.
+	// Claude shows "Incubating..." while loading MCP servers, etc.
+	// See: gt-saj - Deacon attach should wait for Claude to fully initialize
+	if err := t.WaitForRuntimeReady(sessionName, runtimeConfig, constants.ClaudeStartTimeout); err != nil {
+		// Non-fatal - continue with nudges even if we timeout
+		// The nudges may be lost but the session will still work
+	}
+
 	// Inject startup nudge for predecessor discovery via /resume
 	_ = session.StartupNudge(t, sessionName, session.StartupNudgeConfig{
 		Recipient: "deacon",
@@ -460,8 +468,18 @@ func runDeaconAttach(cmd *cobra.Command, args []string) error {
 		if err := startDeaconSession(t, sessionName, deaconAgentOverride); err != nil {
 			return err
 		}
+		// startDeaconSession already waits for Claude to be ready
+	} else {
+		// Session exists but Claude may still be initializing (e.g., after recent restart).
+		// Wait for Claude to be ready before attaching to prevent lost keystrokes.
+		// See: gt-saj - Deacon attach should wait for Claude to fully initialize
+		runtimeConfig := config.LoadRuntimeConfig("")
+		fmt.Println("Waiting for Claude to be ready...")
+		if err := t.WaitForRuntimeReady(sessionName, runtimeConfig, constants.ClaudeStartTimeout); err != nil {
+			// Non-fatal - attach anyway, user can see the state
+			style.PrintWarning("Claude may not be ready yet: %v", err)
+		}
 	}
-	// Session uses a respawn loop, so Claude restarts automatically if it exits
 
 	// Use shared attach helper (smart: links if inside tmux, attaches if outside)
 	return attachToTmuxSession(sessionName)

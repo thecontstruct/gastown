@@ -4,8 +4,11 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/gastown/internal/config"
+	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/mayor"
 	"github.com/steveyegge/gastown/internal/style"
+	"github.com/steveyegge/gastown/internal/tmux"
 	"github.com/steveyegge/gastown/internal/workspace"
 )
 
@@ -142,6 +145,8 @@ func runMayorAttach(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	t := tmux.NewTmux()
+
 	running, err := mgr.IsRunning()
 	if err != nil {
 		return fmt.Errorf("checking session: %w", err)
@@ -151,6 +156,17 @@ func runMayorAttach(cmd *cobra.Command, args []string) error {
 		fmt.Println("Mayor session not running, starting...")
 		if err := mgr.Start(mayorAgentOverride); err != nil {
 			return err
+		}
+		// mgr.Start already waits for Claude to be ready
+	} else {
+		// Session exists but Claude may still be initializing (e.g., after recent restart).
+		// Wait for Claude to be ready before attaching to prevent lost keystrokes.
+		// See: gt-saj - Deacon attach should wait for Claude to fully initialize
+		runtimeConfig := config.LoadRuntimeConfig("")
+		fmt.Println("Waiting for Claude to be ready...")
+		if err := t.WaitForRuntimeReady(mgr.SessionName(), runtimeConfig, constants.ClaudeStartTimeout); err != nil {
+			// Non-fatal - attach anyway, user can see the state
+			style.PrintWarning("Claude may not be ready yet: %v", err)
 		}
 	}
 

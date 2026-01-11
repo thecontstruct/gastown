@@ -7,6 +7,8 @@ import (
 	"os/exec"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/gastown/internal/config"
+	"github.com/steveyegge/gastown/internal/constants"
 	"github.com/steveyegge/gastown/internal/style"
 	"github.com/steveyegge/gastown/internal/tmux"
 	"github.com/steveyegge/gastown/internal/witness"
@@ -306,6 +308,7 @@ func runWitnessAttach(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	t := tmux.NewTmux()
 	sessionName := witnessSessionName(rigName)
 
 	// Ensure session exists (creates if needed)
@@ -313,6 +316,17 @@ func runWitnessAttach(cmd *cobra.Command, args []string) error {
 		return err
 	} else if err == nil {
 		fmt.Printf("Started witness session for %s\n", rigName)
+		// mgr.Start already waits for Claude to be ready
+	} else {
+		// Session exists but Claude may still be initializing (e.g., after recent restart).
+		// Wait for Claude to be ready before attaching to prevent lost keystrokes.
+		// See: gt-saj - Deacon attach should wait for Claude to fully initialize
+		runtimeConfig := config.LoadRuntimeConfig("")
+		fmt.Println("Waiting for Claude to be ready...")
+		if err := t.WaitForRuntimeReady(sessionName, runtimeConfig, constants.ClaudeStartTimeout); err != nil {
+			// Non-fatal - attach anyway, user can see the state
+			style.PrintWarning("Claude may not be ready yet: %v", err)
+		}
 	}
 
 	// Attach to the session
