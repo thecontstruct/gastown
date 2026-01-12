@@ -192,7 +192,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	// IMPORTANT: CLAUDE.md must be in ~/gt/mayor/, NOT ~/gt/
 	// CLAUDE.md at town root would be inherited by ALL agents via directory traversal,
 	// causing crew/polecat/etc to receive Mayor-specific instructions.
-	if err := createMayorCLAUDEmd(mayorDir); err != nil {
+	if err := createMayorCLAUDEmd(mayorDir, ""); err != nil {
 		fmt.Printf("   %s Could not create CLAUDE.md: %v\n", style.Dim.Render("⚠"), err)
 	} else {
 		fmt.Printf("   ✓ Created mayor/CLAUDE.md\n")
@@ -316,7 +316,7 @@ func runInstall(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func createMayorCLAUDEmd(mayorDir string) error {
+func createMayorCLAUDEmd(mayorDir, _ string) error {
 	// Create a minimal bootstrap pointer instead of full context.
 	// Full context is injected ephemerally by `gt prime` at session start.
 	// This keeps the on-disk file small (<30 lines) per priming architecture.

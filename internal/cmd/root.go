@@ -142,9 +142,7 @@ func checkStaleBinaryWarning() {
 
 	if info.IsStale {
 		staleBinaryWarned = true
-		if err := os.Setenv("GT_STALE_WARNED", "1"); err != nil {
-			fmt.Fprintf(os.Stderr, "%s Failed to mark stale warning: %v\n", style.WarningPrefix, err)
-		}
+		_ = os.Setenv("GT_STALE_WARNED", "1")
 
 		msg := fmt.Sprintf("gt binary is stale (built from %s, repo at %s)",
 			version.ShortCommit(info.BinaryCommit), version.ShortCommit(info.RepoCommit))

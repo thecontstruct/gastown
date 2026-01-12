@@ -95,11 +95,7 @@ func runDown(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("cannot proceed: %w", err)
 		}
-		defer func() {
-			if err := lock.Unlock(); err != nil {
-				fmt.Fprintf(os.Stderr, "%s Failed to release shutdown lock: %v\n", style.WarningPrefix, err)
-			}
-		}()
+		defer func() { _ = lock.Unlock() }()
 	}
 	allOK := true
 
